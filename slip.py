@@ -1,3 +1,7 @@
+import re
+import logging as logger
+
+
 class CamadaEnlace:
     ignore_checksum = False
 
@@ -43,6 +47,8 @@ class Enlace:
     def __init__(self, linha_serial):
         self.linha_serial = linha_serial
         self.linha_serial.registrar_recebedor(self.__raw_recv)
+        self.RE_DATAGRAM = re.compile(b"(\xC0)*([^\xC0]+)(\xC0)", re.MULTILINE)
+        self.buffer = b""
 
     def registrar_recebedor(self, callback):
         self.callback = callback
@@ -51,7 +57,12 @@ class Enlace:
         # TODO: Preencha aqui com o código para enviar o datagrama pela linha
         # serial, fazendo corretamente a delimitação de quadros e o escape de
         # sequências especiais, de acordo com o protocolo CamadaEnlace (RFC 1055).
-        pass
+        logger.debug(f"Datagrama sendo enviado: {datagrama}")
+        # Tratamento de sequências de escape
+        datagrama = datagrama.replace(b"\xDB", b"\xDB\xDD").replace(b"\xC0", b"\xDB\xDC")
+        # Adiciona os bytes de começo/fim
+        datagrama = b"\xC0" + datagrama + b"\xC0"
+        self.linha_serial.enviar(datagrama)
 
     def __raw_recv(self, dados):
         # TODO: Preencha aqui com o código para receber dados da linha serial.
@@ -61,4 +72,32 @@ class Enlace:
         # vir quebrado de várias formas diferentes - por exemplo, podem vir
         # apenas pedaços de um quadro, ou um pedaço de quadro seguido de um
         # pedaço de outro, ou vários quadros de uma vez só.
-        pass
+
+        # Buffer temporário para tratar um datagrama de cada vez
+        buf = self.buffer + dados
+        logger.debug(f"Buffer temporário: {buf}")
+
+        quadros = self.RE_DATAGRAM.findall(buf)
+        if len(quadros) == 0:
+            # Caso não seja um datagrama completo guarda no buffer
+            # e aguarda o próximo recebimento
+            self.buffer = buf
+            logger.debug(f"Buffer atualizado: {self.buffer}")
+            return
+
+        tam_buf = 0
+        for quadro in quadros:
+            logger.debug(f"Quadro decodado: {quadro}")
+            tam_buf += len(quadro[0]) + len(quadro[1]) + len(quadro[2])
+            # Trata sequências de escape
+            datagrama = quadro[1].replace(b"\xDB\xDC", b"\xC0").replace(b"\xDB\xDD", b"\xDB")
+            logger.debug(f"Datagrama extraído: {datagrama}")
+            try:
+                self.callback(datagrama)
+            except:
+                logger.error(f"Datagrama com erro: {datagrama}")
+            finally:
+                # Limpa apenas o tamanho do buffer temporário do buffer de dados
+                # para o caso de haverem múltiplos datagramas
+                self.buffer = buf[tam_buf:]
+                logger.debug(f"Buffer pós envio: {self.buffer}")
